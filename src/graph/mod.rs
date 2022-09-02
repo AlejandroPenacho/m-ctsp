@@ -57,9 +57,7 @@ impl GraphWH {
         self.n_targets
     }
 
-
     pub fn create_random(size: i32, n_agents: usize, n_targets: usize) -> GraphWH {
-
         let mut rng = rand::thread_rng();
 
         let mut available_cells: Vec<(i32,i32)> = (0..size).map(
