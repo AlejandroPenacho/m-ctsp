@@ -16,7 +16,8 @@ struct State<'a> {
     remaining_nodes: Vec<WHNode>,
     final_nodes: &'a HashSet<WHNode>,
     total_cost: i32,
-    active_robots: Vec<bool>
+    active_robots: Vec<bool>,
+    available_final_nodes: u8
 }
 
 impl<'a> State<'a> {
@@ -30,6 +31,8 @@ impl<'a> State<'a> {
 
         let n_active_robots = agent_positions.len();
 
+        let available_final_nodes: u8 = (n_active_robots - final_nodes.len() + 1).try_into().unwrap();
+
         State {
             n_agents: agent_positions.len(),
             positions: agent_positions,
@@ -38,7 +41,8 @@ impl<'a> State<'a> {
             remaining_nodes,
             final_nodes,
             total_cost: 0,
-            active_robots: vec![true; n_active_robots]
+            active_robots: vec![true; n_active_robots],
+            available_final_nodes
         }
     }
 }
@@ -105,11 +109,8 @@ struct Cycler<'a> {
 
 impl<'a> Cycler<'a> {
     fn new(n_agents: usize, nodes: &'a[WHNode], final_max_avail: u8) -> Self {
-
         if final_max_avail != 0 {
             assert!(matches!(nodes[0], WHNode::Final))
-        } else {
-            assert!(!matches!(nodes[0], WHNode::Final))
         }
 
         let mut available_nodes = nodes.iter().enumerate().map(|(i,_)| {
@@ -121,7 +122,7 @@ impl<'a> Cycler<'a> {
         let mut current_conf = vec![None; n_agents];
 
         for i in (0..n_agents).rev() {
-            let target_index = available_nodes.iter().enumerate().find(|&(i,&x)| x != 0).unwrap().0;
+            let target_index = available_nodes.iter().enumerate().find(|&(_,&x)| x != 0).unwrap().0;
             available_nodes[target_index] -= 1;
             current_conf[i] = Some(target_index);
         }
@@ -245,22 +246,23 @@ impl<'a> MASolver<'a> {
         (best_match, match_cost)
     }
 
-    /*
-    fn expand_states(state: &State) {
+    fn expand_states(state: &State<'a>) -> Vec<State<'a>> {
         let n_active_agents = state.active_robots.iter().filter(|&&x| x).count();
 
-        let cycler = Cycler::new(n_active_agents, state.remaining_targets.len());
-        let mut new_states: Vec<State> = Vec::with_capacity(cycler.get_total_n_combinations());
+        println!("{}", n_active_agents);
 
-        for index in 0..cycler.get_total_n_combinations() {
+        let cycler = Cycler::new(n_active_agents, &state.remaining_nodes, state.available_final_nodes);
+        let mut new_states: Vec<State> = Vec::new();
+
+        for combination in cycler {
             let mut new_state = state.clone();
-            let next_targets = cycler.get_index_combination(index, &mut new_state.remaining_targets);
 
             for (next_target_index, agent_index) in (0..state.n_agents).filter(|&i| {
                     state.active_robots[i]
                 }).enumerate() {
 
                 let prev_agent_position = &new_state.positions[agent_index];
+                let new_agent_position: WHNode = combination[next_target_index].clone();
 
                 /*
                 let distance = self.graph.get_arc_cost(
@@ -268,17 +270,41 @@ impl<'a> MASolver<'a> {
                     &next_targets[next_target_index].into_real(&final_targets[agent_index]),
                 );
                 */
-                let distance = 0;
 
-                new_state.positions[agent_index] = next_targets[next_target_index];
+                if let WHNode::Target(_) = new_agent_position {
+                    new_state.remaining_nodes.remove(
+                        new_state.remaining_nodes.iter().position(|x| x == &new_agent_position).unwrap()
+                    );
+                }
+                if let WHNode::Final = new_agent_position {
+                    new_state.available_final_nodes -= 1;
+                }
+                if state.final_nodes.contains(&new_agent_position) {
+                    new_state.active_robots[agent_index] = false;
+                }
+
+                let distance = 1;
+
+                new_state.positions[agent_index] = new_agent_position;
                 new_state.travelled_distances[agent_index] += distance;
                 new_state.total_cost += new_state.travelled_distances[agent_index];
+
             }
 
+            if new_state.active_robots.iter().filter(|&&x| x).count() == 0 {
+                if new_state.remaining_nodes.len() > 1 {
+                    continue
+                }
+                if new_state.remaining_nodes.len() == 1
+                    && matches!(new_state.remaining_nodes[0], WHNode::Final) {
+                    continue
+                }
+            }
+            println!("{:?}", new_state.positions);
             new_states.push(new_state);
         }
+        new_states
     }
-    */
 }
 
 
@@ -313,15 +339,19 @@ mod test {
             }
         }
 
-        /*
         #[test]
         fn expansion() {
             use WHNode::*;
-            let state = State{ 
-                n_agents: 2,
-                positions: [Target
-            };
+            let mut final_nodes = HashSet::new();
+            final_nodes.insert(Final);
+            let state = State::new(
+                vec![Agent(1), Agent(2)],
+                vec![0, 0],
+                vec![Final, Target(1), Target(2), Target(3)],
+                &final_nodes
+            );
+
+            let new_states = MASolver::expand_states(&state);
         }
-        */
     }
 }
