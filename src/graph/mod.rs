@@ -3,13 +3,14 @@ use rand::Rng;
 
 pub trait Graph {
     type Node;
-    fn get_arc_cost(&self, x_0: Self::Node, x_1: Self::Node) -> Option<i32>;
+    fn get_arc_cost(&self, x_0: &Self::Node, x_1: &Self::Node) -> Option<i32>;
 }
 
-
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum WHNode {
     Agent(usize),
-    Target(usize)
+    Target(usize),
+    Final
 }
 
 #[derive(Debug)]
@@ -23,12 +24,13 @@ pub struct GraphWH {
 impl Graph for GraphWH {
     type Node = WHNode;
 
-    fn get_arc_cost(&self, x_0: Self::Node, x_1: Self::Node) -> Option<i32> {
+    fn get_arc_cost(&self, x_0: &Self::Node, x_1: &Self::Node) -> Option<i32> {
         use WHNode::*;
 
         let target_dest_index = match x_1 {
             Target(x) => x,
-            Agent(_) => return None
+            Agent(_) => return None,
+            Final => return Some(0)
         };
 
         Some(
@@ -42,7 +44,8 @@ impl Graph for GraphWH {
                     self.target_to_target_costs[
                         target_origin_index + target_dest_index * self.n_agents
                     ]
-                }
+                },
+                Final => return None
             }
         )
     }

@@ -2,10 +2,10 @@ mod graph;
 mod solver;
 
 fn main() {
-    let graph = graph::GraphWH::create_random(15,8,24);
+    let graph = graph::GraphWH::create_random(80,80,240);
     println!("{:?}", graph);
 
-    let mut solver = solver::multi_dp::MASolver::new(&graph);
+    let mut solver = solver::MASolver::new(&graph);
 
     solver.compute_initial_assignment();
 
