@@ -33,6 +33,8 @@ impl Graph for GraphWH {
             Final => return Some(0)
         };
 
+        // println!("{:?} -> {:?}", x_0, x_1);
+
         Some(
             match x_0 {
                 Agent(agent_origin_index) => {
