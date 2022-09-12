@@ -44,7 +44,7 @@ impl Graph for GraphWH {
                 },
                 Target(target_origin_index) => {
                     self.target_to_target_costs[
-                        target_origin_index + target_dest_index * self.n_agents
+                        target_origin_index + target_dest_index * self.n_targets
                     ]
                 },
                 Final => return None
@@ -115,9 +115,102 @@ impl GraphWH {
             agent_to_target_costs
         }
     }
-}
 
+    pub fn create_test_graph(
+        n_agents: usize,
+        n_targets: usize,
+        agent_to_target_costs: Vec<Vec<i32>>,
+        target_to_target_costs: Vec<Vec<i32>>) -> GraphWH {
+
+        assert_eq!(agent_to_target_costs.len(), n_agents);
+        for cost_vector in agent_to_target_costs.iter() {
+            assert_eq!(cost_vector.len(), n_targets);
+        }
+
+        assert_eq!(target_to_target_costs.len(), n_targets);
+        for cost_vector in target_to_target_costs.iter() {
+            assert_eq!(cost_vector.len(), n_targets);
+        }
+
+        let mut agent_to_target_flat = vec![0; n_agents*n_targets];
+
+        for agent in 0..n_agents {
+            for target in 0..n_targets{
+                agent_to_target_flat[agent + n_agents*target] = agent_to_target_costs[agent][target];
+            }
+        }
+
+        let mut target_to_target_flat = vec![0; n_targets * n_targets];
+        for origin_target in 0..n_targets {
+            for dest_target in 0..n_targets {
+                target_to_target_flat[origin_target + n_targets * dest_target] = 
+                    target_to_target_costs[origin_target][dest_target]
+            }
+        }
+
+        return GraphWH {
+            n_agents,
+            n_targets,
+            agent_to_target_costs: agent_to_target_flat,
+            target_to_target_costs: target_to_target_flat
+
+        }
+    }
+}
 
 fn manhattan_distance(x_0: (i32,i32), x_1: (i32,i32)) -> i32 {
     (x_0.0 - x_1.0).abs() + (x_1.0 - x_1.1).abs()
 }
+
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn check_test_graph() {
+
+        let agent_to_target = vec![
+            vec![1,3,5],
+            vec![2,8,12]
+        ];
+        let target_to_target = vec![
+            vec![4,5,6],
+            vec![7,2,1],
+            vec![2,4,9]
+        ];
+                
+        let graph = GraphWH::create_test_graph(
+            2,
+            3,
+            agent_to_target.clone(),
+            target_to_target.clone()
+        );
+
+        println!("{:?}", graph.agent_to_target_costs);
+        println!("{:?}", graph.target_to_target_costs);
+
+        use WHNode::*;
+
+        for agent in 0..2 {
+            for target in 0..3 {
+                assert_eq!(
+                    Some(agent_to_target[agent][target]),
+                    graph.get_arc_cost(&Agent(agent), &Target(target))
+                );
+            }
+        }
+        for origin_target in 0..3 {
+            for dest_target in 0..3 {
+                assert_eq!(
+                    Some(target_to_target[origin_target][dest_target]),
+                    graph.get_arc_cost(&Target(origin_target), &Target(dest_target)),
+                    "Fail in origin: {}, dest {}", origin_target, dest_target
+                );
+
+            }
+        }
+
+    }
+}
+

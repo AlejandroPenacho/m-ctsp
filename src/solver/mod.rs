@@ -6,7 +6,6 @@ use crate::graph::{WHNode,Graph};
 use std::collections::{HashSet,HashMap};
 
 
-
 #[derive(Clone)]
 struct State {
     paths: Vec<Vec<WHNode>>,
@@ -209,6 +208,7 @@ impl<'a> ReducedProblem<'a> {
         paths
     }
 
+    /*
     fn alt_get_partial_path_cost(&self, path: &[WHNode], index: usize) -> i32 {
         let mut complete_path = Vec::from(path);
         complete_path.append(&mut self.final_nodes.get(path.iter().last().unwrap()).unwrap().clone());
@@ -221,6 +221,7 @@ impl<'a> ReducedProblem<'a> {
         }
         cost
     }
+    */
 
     fn get_partial_path_cost(&self, path: &[WHNode], index: usize) -> i32 {
         let mut distance = self.initial_distances[index];
@@ -279,7 +280,6 @@ impl<'a> std::iter::Iterator for Cycler<'a> {
     type Item = Vec<WHNode>;
 
     fn next(&mut self) -> Option<Self::Item> {
-
         if !self.started {
             self.started = true;
             return Some(self.current_conf.iter().map(|&i| self.nodes[i.unwrap()].clone()).collect())
@@ -406,20 +406,51 @@ impl<'a> MASolver<'a> {
 
         let mut final_node_available = false;
 
+        //For each agent, split the path and add it to the reduced problem
         for (agent_index, (i_0, i_f)) in endpoints.iter() {
+
+            /*
+                For i_0=3 and i_f=6:
+
+                0---1---2---3---4---5---6---7---8
+
+                             |||
+                             VVV
+
+                0---1---2       - Path that stays in the original problem   self.agent_paths[agent_index]
+                3               - Initial node for the reduced problem      agent_initial_node
+                4---5---6       - Nodes in  "remaining"                     splitted_nodes
+                6               - Node in final nodes                       final_nodes[agent_index]
+                7---8           - Final chain connected to 6                final_chain
+                    
+            */
+
+            // These are the nodes that stand after the splitted part
             let final_chain: Vec<WHNode> = self.agent_paths[*agent_index].split_off(i_f+1);
+
+            // Nodes between i_0 (exclusive) and i_f (inclusive), that are liberated in the new
+            // problem.
             let mut splitted_nodes: Vec<WHNode> = self.agent_paths[*agent_index].split_off(i_0+1);
 
+            // The original path is a copy of the path that would be obtained
+            // in the reduced problem, that would produce the same path in the
+            // complete problem
             let mut agent_original_path = vec![self.agent_paths[*agent_index].iter().last().unwrap().clone()];
             agent_original_path.append(&mut splitted_nodes.clone());
             original_paths.push(agent_original_path);
 
+            // The node in which the agent starts the reduced problem
             let agent_initial_node = self.agent_paths[*agent_index].pop().unwrap();
 
+            // Nodes that, when reached by an agent, terminate its path. They
+            // are either final nodes (WHNode::Final), or are associated to a
+            // chain that ends in a final node.
             final_nodes.insert(splitted_nodes.iter().last().unwrap().clone(), final_chain);
+
             initial_nodes.push(agent_initial_node.clone());
 
-
+            // If the final node is a final node, it must be added to the
+            // remaining nodes only once.
             if splitted_nodes.iter().last().unwrap() == &WHNode::Final {
                 final_node_available = true;
                 splitted_nodes.pop();
@@ -427,6 +458,8 @@ impl<'a> MASolver<'a> {
 
             remaining_nodes.append(&mut splitted_nodes);
 
+            // Compute the travelled distance of the agent when it is in the
+            // initial node. This affects the cost of all nodes it takes.
             let mut initial_distance = 0;
             if !(self.agent_paths[*agent_index].len() == 0) {
 
@@ -451,24 +484,12 @@ impl<'a> MASolver<'a> {
             remaining_nodes = remaining_nodes.into_iter().rev().collect();
         }
 
-        /*
-        println!("Remaining nodes: ");
-        println!("{:?}\n", remaining_nodes);
-        println!("Initial nodes: ");
-        println!("{:?}\n", initial_nodes);
-        println!("Final nodes: ");
-        for (key, nodes) in final_nodes.iter() {
-            println!("{:?} -> {:?}", key, nodes);
-        }
-        */
-
         let reduced_problem = ReducedProblem::new(
             &self.graph,
             initial_travel_distances,
             initial_nodes,
             remaining_nodes,
             final_nodes,
-            // Some(original_paths)
             None
         );
 
@@ -523,6 +544,72 @@ mod test {
     use super::*;
     use crate::graph::GraphWH;
 
+    fn simple_graph() -> GraphWH {
+        GraphWH::create_test_graph(
+            3,
+            5,
+            vec![
+                vec![ 1, 6, 5, 5, 2],
+                vec![ 8, 5, 1, 3, 8],
+                vec![ 1, 2, 3, 7, 5],
+            ],
+            vec![
+                vec![ 2, 4, 6, 2, 6],
+                vec![ 3, 7, 1, 4, 6],
+                vec![ 1, 1, 4, 5, 3],
+                vec![ 9, 6, 4, 5, 2],
+                vec![ 7, 4, 3, 2, 2],
+            ]
+        )
+    }
+
+    mod cycler {
+        use super::*;
+        #[test]
+        fn simple() {
+            use super::WHNode::*;
+            let cycler = Cycler::new(
+                2,
+                &[Target(0), Target(1), Target(2)],
+                0
+            );
+
+            let all_combinations = cycler.collect::<Vec<Vec<WHNode>>>();
+            assert_eq!(
+                vec![
+                    vec![Target(1), Target(0)],
+                    vec![Target(2), Target(0)],
+                    vec![Target(0), Target(1)],
+                    vec![Target(2), Target(1)],
+                    vec![Target(0), Target(2)],
+                    vec![Target(1), Target(2)]
+                ],
+                all_combinations
+            );
+        }
+        #[test]
+        fn with_exhausted_final() {
+            use super::WHNode::*;
+            let cycler = Cycler::new(
+                2,
+                &[Final, Target(0), Target(1), Target(2)],
+                0
+            );
+
+            let all_combinations = cycler.collect::<Vec<Vec<WHNode>>>();
+            assert_eq!(
+                vec![
+                    vec![Target(1), Target(0)],
+                    vec![Target(2), Target(0)],
+                    vec![Target(0), Target(1)],
+                    vec![Target(2), Target(1)],
+                    vec![Target(0), Target(2)],
+                    vec![Target(1), Target(2)]
+                ],
+                all_combinations
+            );
+        }
+    }
 
     #[test]
     fn the_cut() {
