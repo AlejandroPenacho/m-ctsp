@@ -8,65 +8,122 @@ use std::collections::{HashSet,HashMap};
 
 
 #[derive(Clone)]
-struct State<'a,'b> {
-    graph: &'a graph::GraphWH,
+struct State {
     paths: Vec<Vec<WHNode>>,
-    init_travelled_distances: Vec<i32>,
     remaining_nodes: Vec<WHNode>,
-    final_nodes: &'b HashMap<WHNode, Vec<WHNode>>,
     available_final_nodes: u8
 }
 
-impl<'a,'b> State<'a,'b> {
+impl State {
     fn new(
-        graph: &'a graph::GraphWH,
         agent_positions: Vec<WHNode>,
-        init_travelled_distances: Vec<i32>,
         remaining_nodes: Vec<WHNode>,
-        final_nodes: &'b HashMap<WHNode, Vec<WHNode>>) -> Self {
+        available_final_nodes: u8) -> Self {
 
         let paths: Vec<Vec<WHNode>> = agent_positions.iter().map(|x| vec![x.clone()]).collect();
 
-        let n_active_robots = agent_positions.len();
-
-        let available_final_nodes: u8 = (n_active_robots - final_nodes.len() + 1).try_into().unwrap();
-
         State {
-            graph,
             paths,
-            init_travelled_distances,
             remaining_nodes,
-            final_nodes,
             available_final_nodes
         }
     }
+}
 
-    fn expand(&self) -> Vec<Self> {
-        let n_active_agents = self.paths.iter().filter(|&x|
+struct ReducedProblem<'a> {
+    graph: &'a graph::GraphWH,
+    initial_distances: Vec<i32>,
+    final_nodes: HashMap<WHNode, Vec<WHNode>>,
+    queue: Vec<State>,
+    best_solution: Option<(Vec<Vec<WHNode>>, i32)>
+}
+
+impl<'a> ReducedProblem<'a> {
+    fn new(
+        graph: &'a graph::GraphWH,
+        initial_distances: Vec<i32>,
+        initial_positions: Vec<WHNode>,
+        remaining_nodes: Vec<WHNode>,
+        final_nodes: HashMap<WHNode, Vec<WHNode>>,
+        initial_solution: Option<Vec<Vec<WHNode>>>) -> Self {
+
+
+        let n_agents = initial_positions.len();
+
+        let available_final_nodes = if remaining_nodes.len() != 0 && remaining_nodes[0] == WHNode::Final {
+            n_agents - final_nodes.len() + 1
+        } else {
+            assert_eq!(n_agents, final_nodes.len());
+            0
+        };
+
+        let first_state = State::new(
+            initial_positions,
+            remaining_nodes,
+            available_final_nodes.try_into().unwrap()
+        );
+
+        let mut output = ReducedProblem {
+            graph,
+            initial_distances: initial_distances.clone(),
+            final_nodes,
+            queue: vec![first_state],
+            best_solution: None,
+        };
+
+        let initial_solution = initial_solution.map(|paths| {
+            let total_cost = paths.iter()
+                .enumerate()
+                .map(|(index, path)| output.get_partial_path_cost(path, index))
+                .sum::<i32>();
+
+            (paths, total_cost)
+        });
+
+        output.best_solution = initial_solution;
+        output
+    }
+
+    fn expand_state(&self, state: &State) -> Vec<State> {
+        // Get the number of agents that have not reached a final node yet
+        let n_active_agents = state.paths.iter().filter(|&x|
             !self.final_nodes.contains_key(x.last().unwrap())
         ).count();
 
-        let n_agents = self.paths.len();
+        // Get the real total number of agents
+        let n_agents = state.paths.len();
 
-        let cycler = Cycler::new(n_active_agents, &self.remaining_nodes, self.available_final_nodes);
+        // The cycler generates all possible next actions for the active agents
+        let cycler = Cycler::new(n_active_agents, &state.remaining_nodes, state.available_final_nodes);
+
         let mut new_states: Vec<State> = Vec::new();
-
         for combination in cycler {
-            let mut new_state = self.clone();
+            let mut new_state = state.clone();
 
+            // next_target_index corresponds to the index of the agent among
+            // active agents, and agent_index in the index among all agents
+            // The first one correponds to the index of the next node in the
+            // combination
             for (next_target_index, agent_index) in (0..n_agents).filter(|&i| {
-                    !self.final_nodes.contains_key(self.paths[i].iter().last().unwrap())
+                    !self.final_nodes.contains_key(state.paths[i].iter().last().unwrap())
                 }).enumerate() {
 
-
                 // let prev_agent_position = new_state.paths[agent_index].iter().last().unwrap();
+
+                // Take the new agent position from the combination
                 let new_agent_position: WHNode = combination[next_target_index].clone();
 
+                // If the new position is a target, remove it from the
+                // remaining nodes
                 if let WHNode::Target(_) = new_agent_position {
                     new_state.remaining_nodes.remove(
                         new_state.remaining_nodes.iter().position(|x| x == &new_agent_position).unwrap()
                     );
                 }
+
+                // If it is a final node, reduced the number of available final
+                // nodes by one. If it is the last final node, remove the node
+                // from the remaining nodes
                 if let WHNode::Final = new_agent_position {
                     new_state.available_final_nodes -= 1;
                     if new_state.available_final_nodes == 0 { new_state.remaining_nodes.remove(0); }
@@ -76,87 +133,60 @@ impl<'a,'b> State<'a,'b> {
 
             }
 
-            /*
-            if new_state.paths.iter().filter(|&x| !new_state.final_nodes.contains_key(x.iter().last().unwrap())).count() == 0 {
-                if new_state.remaining_nodes.len() > 1 {
-                    continue
-                }
-                if new_state.remaining_nodes.len() == 1
-                    && matches!(new_state.remaining_nodes[0], WHNode::Final) {
-                    continue
-                }
-            }
-            */
             new_states.push(new_state);
         }
+
         new_states
     }
 
-    fn get_path_cost(&self, path: &[WHNode]) -> i32 {
-        let mut last_node: &WHNode = &path[0];
+    fn iterate(&mut self) -> bool {
+        //Perform one iteration of the algorithm, expanding a single state and
+        //adding the valid new states to the queue
 
-        let mut cost = 0;
-        for node in &path[1..] {
-            /*
-            println!("Adding {:?} -> {:?} ({})",
-                     last_node,
-                     node,
-                     self.graph.get_arc_cost(last_node, node).unwrap()
-                );
-            */
-
-            if node == &WHNode::Final { continue }
-            cost += cost + self.graph.get_arc_cost(last_node, node).unwrap();
-            last_node = node;
-        }
-
-        match self.final_nodes.get(path.iter().last().unwrap()) {
-            None => {},
-            Some(next_nodes) => cost *= 1 + next_nodes.len() as i32
-        };
-
-        // println!("Cost: {cost}");
-
-        return cost
-    }
-}
-
-struct ReducedProblem<'a,'b> {
-    queue: Vec<State<'a,'b>>,
-    best_solution: Option<(State<'a,'b>, i32)>
-}
-
-impl<'a,'b> ReducedProblem<'a,'b> {
-    fn new(first_state: State<'a,'b>) -> Self {
-        ReducedProblem {
-            queue: vec![first_state],
-            best_solution: None
-        }
-    }
-
-    fn expand_first(&mut self) -> bool {
+        // If there are no states left, return inmediately, singaling the end
+        // of the algorithm
         if self.queue.len() == 0 { return true };
+
+        // Take one state from the queue
         let state = self.queue.remove(0);
-        let new_states = state.expand();
 
+        // Expand the state
+        let new_states = self.expand_state(&state);
+
+        // Not all states obtained from the expansion are valid, so the list
+        // must be filtered
         for new_state in new_states {
-            let all_nodes_covered =  new_state.remaining_nodes.len() == 0 ||
-                new_state.remaining_nodes.len() == 1 && new_state.remaining_nodes[0] == WHNode::Final && new_state.available_final_nodes == 0;
+            // Whether there are no remaining nodes to be covered by the agents
+            let all_nodes_covered = 
+                new_state.remaining_nodes.len() == 0 ||
+                (
+                    new_state.remaining_nodes.len() == 1
+                    && new_state.remaining_nodes[0] == WHNode::Final
+                    && new_state.available_final_nodes == 0
+                );
 
+            // Whether all agents have reached a final node
             let all_agents_done = new_state.paths
                 .iter()
-                .filter(|p| !new_state.final_nodes.contains_key(p.iter().last().unwrap())).count() == 0;
+                .filter(|p| !self.final_nodes.contains_key(p.iter().last().unwrap())).count() == 0;
 
+            // If the state is complete (a valid final solution), compute its
+            // cost and, if it is better than the current, replace it
             if all_nodes_covered && all_agents_done {
-                let cost = new_state.paths.iter().map(|p| new_state.get_path_cost(p)).sum();
-
-                // println!("New solution:\n{:?}\n{:?}\n", new_state.paths, cost);
+                let cost = new_state.paths.iter().enumerate()
+                    .map(|(index, path)| {
+                            self.get_partial_path_cost(path, index)
+                        })
+                    .sum();
 
                 if self.best_solution.as_ref().map_or(true, |(_, prev_best_cost)| &cost < prev_best_cost) {
-                    self.best_solution = Some((new_state, cost));
+                    self.best_solution = Some((new_state.paths, cost));
                 }
                 continue
             }
+            // If all agents are finished but not all nodes covered, the state
+            // can not be expanded and will not reach a complete solution. So,
+            // it is not added to the queue
             if all_agents_done && !all_nodes_covered { continue }
 
             self.queue.push(new_state);
@@ -167,10 +197,48 @@ impl<'a,'b> ReducedProblem<'a,'b> {
 
     fn optimize(mut self) -> Vec<Vec<WHNode>> {
         loop {
-            let is_finished = self.expand_first();
+            let is_finished = self.iterate();
             if is_finished { break }
         }
-        self.best_solution.unwrap().0.paths
+        let mut paths = self.best_solution.unwrap().0;
+        
+        for path in paths.iter_mut() {
+            path.append(&mut self.final_nodes.get_mut(path.iter().last().unwrap()).unwrap());
+        }
+
+        paths
+    }
+
+    fn alt_get_partial_path_cost(&self, path: &[WHNode], index: usize) -> i32 {
+        let mut complete_path = Vec::from(path);
+        complete_path.append(&mut self.final_nodes.get(path.iter().last().unwrap()).unwrap().clone());
+        let mut distance = self.initial_distances[index];
+        let mut cost = 0;
+
+        for i in 0..(complete_path.len()-1) {
+            distance += self.graph.get_arc_cost(&complete_path[i], &complete_path[i+1]).unwrap();
+            cost += distance;
+        }
+        cost
+    }
+
+    fn get_partial_path_cost(&self, path: &[WHNode], index: usize) -> i32 {
+        let mut distance = self.initial_distances[index];
+        let mut cost = 0;
+
+
+        for i in 0..(path.len()-2) {
+            distance += self.graph.get_arc_cost(&path[i], &path[i+1]).unwrap();
+            cost += distance;
+        }
+        let last_node = path.iter().last().unwrap();
+        if last_node != &WHNode::Final {
+            distance += self.graph.get_arc_cost(&path[path.len()-2], &path[path.len()-1]).unwrap();
+            cost += distance;
+            cost += distance * (self.final_nodes.get(last_node).unwrap().len() as i32 - 1);
+        }
+
+        cost
     }
 }
 
@@ -324,17 +392,15 @@ impl<'a> MASolver<'a> {
         (best_match, match_cost)
     }
 
-    fn solve_reduced(&mut self, endpoints: &[(usize, (usize,usize))]) {
-        for (index, (agent_index, (_, i_f))) in endpoints.iter().enumerate() {
-            for (agent_index_2, _) in endpoints.iter().skip(index+1) {
-                if agent_index == agent_index_2 { panic!() }
-                if self.agent_paths[*agent_index].len() <= *i_f { panic!() }
-            }
-        }
-
-
+    fn split_problem(&mut self, endpoints: &[(usize, (usize,usize))]) -> ReducedProblem {
+        // By keeping the original paths, we have an initial solution for
+        // pruning
+        let mut original_paths: Vec<Vec<WHNode>> = Vec::new();
+        // A list with the nodes that can (and must) be used in the optimization
         let mut remaining_nodes: Vec<WHNode> = Vec::new();
+        // The initial positions of the agents in the reduced problem
         let mut initial_nodes: Vec<WHNode> = Vec::new();
+        // The final nodes
         let mut final_nodes: HashMap<WHNode, Vec<WHNode>> = HashMap::new();
         let mut initial_travel_distances: Vec<i32> = Vec::new();
 
@@ -344,9 +410,15 @@ impl<'a> MASolver<'a> {
             let final_chain: Vec<WHNode> = self.agent_paths[*agent_index].split_off(i_f+1);
             let mut splitted_nodes: Vec<WHNode> = self.agent_paths[*agent_index].split_off(i_0+1);
 
-            final_nodes.insert(splitted_nodes.iter().last().unwrap().clone(), final_chain);
+            let mut agent_original_path = vec![self.agent_paths[*agent_index].iter().last().unwrap().clone()];
+            agent_original_path.append(&mut splitted_nodes.clone());
+            original_paths.push(agent_original_path);
 
-            initial_nodes.push(self.agent_paths[*agent_index].pop().unwrap());
+            let agent_initial_node = self.agent_paths[*agent_index].pop().unwrap();
+
+            final_nodes.insert(splitted_nodes.iter().last().unwrap().clone(), final_chain);
+            initial_nodes.push(agent_initial_node.clone());
+
 
             if splitted_nodes.iter().last().unwrap() == &WHNode::Final {
                 final_node_available = true;
@@ -356,18 +428,21 @@ impl<'a> MASolver<'a> {
             remaining_nodes.append(&mut splitted_nodes);
 
             let mut initial_distance = 0;
-            if !self.agent_paths[*agent_index].len() == 0 {
+            if !(self.agent_paths[*agent_index].len() == 0) {
+
                 for i in 0..(self.agent_paths[*agent_index].len()-1) {
                     initial_distance += self.graph.get_arc_cost(
                         &self.agent_paths[*agent_index][i],
                         &self.agent_paths[*agent_index][i+1]
                     ).unwrap();
                 }
+
                 initial_distance += self.graph.get_arc_cost(
                         self.agent_paths[*agent_index].iter().last().unwrap(),
-                        &initial_nodes[*agent_index]
+                        &agent_initial_node
                     ).unwrap();
             }
+
             initial_travel_distances.push(initial_distance);
         }
 
@@ -376,7 +451,7 @@ impl<'a> MASolver<'a> {
             remaining_nodes = remaining_nodes.into_iter().rev().collect();
         }
 
-
+        /*
         println!("Remaining nodes: ");
         println!("{:?}\n", remaining_nodes);
         println!("Initial nodes: ");
@@ -385,39 +460,63 @@ impl<'a> MASolver<'a> {
         for (key, nodes) in final_nodes.iter() {
             println!("{:?} -> {:?}", key, nodes);
         }
+        */
 
-        let first_state = State::new(
-            self.graph,
-            initial_nodes,
+        let reduced_problem = ReducedProblem::new(
+            &self.graph,
             initial_travel_distances,
+            initial_nodes,
             remaining_nodes,
-            &final_nodes
+            final_nodes,
+            // Some(original_paths)
+            None
         );
 
-        let reduced_problem = ReducedProblem::new(first_state);
+
+        reduced_problem
+    }
+
+    fn solve_reduced(&mut self, endpoints: &[(usize, (usize,usize))]) {
+        // Check that the same agent has not been added twice to the
+        // optimization and that the last optimized node is at much the final
+        // one
+        for (index, (agent_index, (_, i_f))) in endpoints.iter().enumerate() {
+            for (agent_index_2, _) in endpoints.iter().skip(index+1) {
+                if agent_index == agent_index_2 { panic!() }
+                if self.agent_paths[*agent_index].len() <= *i_f { panic!() }
+            }
+        }
+
+        let reduced_problem = self.split_problem(endpoints);
+
         let new_paths = reduced_problem.optimize();
 
         for (index, mut new_path) in new_paths.into_iter().enumerate() {
             let agent_index = endpoints[index].0;
-            let last_node = new_path.iter().last().unwrap();
-            new_path.append(final_nodes.get_mut(last_node).unwrap());
             self.agent_paths[agent_index].append(&mut new_path);
         }
     }
 
     fn compute_total_cost(&self) -> i32 {
         self.agent_paths.iter().map(|path| {
-            let mut cost = 0;
-            for i in 0..(path.len()-2) {
-                cost += cost + self.graph.get_arc_cost(&path[i], &path[i+1]).unwrap();
-            }
-            cost
+            compute_complete_path_cost(self.graph, path).unwrap()
         }).sum()
     }
 }
 
+fn compute_complete_path_cost(graph: &graph::GraphWH, path: &[WHNode]) -> Option<i32> {
+    let mut cost = 0;
+    let mut distance = 0;
 
+    assert!(path.len() != 0, "A path can not be empty");
 
+    // Ignore the last arc, which goes to the final node
+    for i in 0..(path.len()-2) {
+        distance += graph.get_arc_cost(&path[i], &path[i+1]).unwrap();
+        cost += distance;
+    }
+    Some(cost)
+}
 
 #[cfg(test)]
 mod test {
@@ -441,7 +540,8 @@ mod test {
 
     #[test]
     fn much_optimal() {
-        let graph = GraphWH::create_random(20, 4, 12);
+        let n_agents = 4;
+        let graph = GraphWH::create_random(20, n_agents, 12);
         let mut problem = MASolver::new(&graph);
         problem.compute_initial_assignment();
 
@@ -450,12 +550,83 @@ mod test {
         }
         println!("Cost:{}", problem.compute_total_cost());
 
-        for (i,j) in [(0,1),(1,2),(2,3),(3,1)] {
-            problem.solve_reduced(&[
-                (i, (0, problem.agent_paths[i].len()-1)),
-                (j, (0, problem.agent_paths[j].len()-1))
-            ]);
-            println!("\n\nOptimized {} and {}:\n", i, j);
+        for i in 0..n_agents {
+            for j in (i+1)..n_agents {
+                problem.solve_reduced(&[
+                    (i, (0, problem.agent_paths[i].len()-1)),
+                    (j, (0, problem.agent_paths[j].len()-1))
+                ]);
+                println!("\n\nOptimized {} and {}:\n", i, j);
+                for path in problem.agent_paths.iter() {
+                    println!("{:?}", path);
+                }
+                println!("Cost:{}", problem.compute_total_cost());
+            }
+        }
+    }
+
+    #[test]
+    fn mini_optimal() {
+        use WHNode::*;
+        let n_agents = 4;
+        let graph = GraphWH::create_random(20, n_agents, 7);
+
+        println!("Cost R0->0: {}, 0->1: {},  cost 1->2: {}, cost 2->3: {}\n", 
+            graph.get_arc_cost(&Agent(0), &Target(0)).unwrap(),
+            graph.get_arc_cost(&Target(0), &Target(1)).unwrap(),
+            graph.get_arc_cost(&Target(1), &Target(2)).unwrap(),
+            graph.get_arc_cost(&Target(2), &Target(3)).unwrap(),
+        );
+        println!("Cost R1->4: {},  cost 4->5: {}, cost 5->6: {}, cost 6->3: {}\n", 
+            graph.get_arc_cost(&Agent(1), &Target(4)).unwrap(),
+            graph.get_arc_cost(&Target(4), &Target(5)).unwrap(),
+            graph.get_arc_cost(&Target(5), &Target(6)).unwrap(),
+            graph.get_arc_cost(&Target(6), &Target(3)).unwrap(),
+        );
+
+        let mut problem = MASolver::new(&graph);
+        problem.agent_paths = vec![
+            vec![Agent(0), Target(0), Target(1), Target(2), Target(3), Final],
+            vec![Agent(1), Target(4), Target(5), Target(6), Final]
+        ];
+
+        for path in problem.agent_paths.iter() {
+            println!("{:?}", path);
+        }
+        println!("Cost:{}\n\n", problem.compute_total_cost());
+
+        problem.solve_reduced(
+            &[
+                (0, (3,4)),
+                (1, (3,4))
+            ]
+        );
+
+        for path in problem.agent_paths.iter() {
+            println!("{:?}", path);
+        }
+        println!("Cost:{}", problem.compute_total_cost());
+    }
+
+    #[test]
+    fn other_optimal() {
+        let n_agents = 4;
+        let graph = GraphWH::create_random(20, n_agents, 20);
+        let mut problem = MASolver::new(&graph);
+        problem.compute_initial_assignment();
+        println!("Cost:{}\n\n", problem.compute_total_cost());
+
+        for i in 0..5 {
+            let mut endpoints = Vec::new();
+            for agent_index in 0..n_agents {
+                if problem.agent_paths[agent_index].len() > (i + 2) {
+                    endpoints.push((agent_index, (i, i+2)));
+                }
+            }
+    
+            println!("\n\nEndpoints: {:?}", endpoints);
+            problem.solve_reduced(&endpoints);
+
             for path in problem.agent_paths.iter() {
                 println!("{:?}", path);
             }
@@ -501,7 +672,6 @@ mod test {
             for conf in cycles {
                 println!("{:?}", conf);
             }
-
         }
 
 
@@ -513,20 +683,21 @@ mod test {
             let mut final_nodes = HashMap::new();
             final_nodes.insert(Final, vec![]);
             final_nodes.insert(Target(0), vec![Target(4), Final]);
-            let state = State::new(
+            let reduced_problem = ReducedProblem::new(
                 &graph,
-                vec![Agent(0), Agent(1)],
                 vec![0, 0],
+                vec![Agent(0), Agent(1)],
                 vec![Final, Target(0), Target(1), Target(2)],
-                &final_nodes
+                final_nodes,
+                None
             );
 
-            let new_states = state.expand();
+            let new_states = reduced_problem.expand_state(&reduced_problem.queue[0]);
 
             for state in new_states {
                 println!("{:?}", state.paths);
                 for path in state.paths.iter() {
-                    print!("{}, ", state.get_path_cost(path));
+                    print!("{:?}, ", compute_complete_path_cost(&graph, path));
                 }
                 println!();
             }
@@ -540,18 +711,17 @@ mod test {
             let mut final_nodes = HashMap::new();
             final_nodes.insert(Final, vec![]);
             final_nodes.insert(Target(0), vec![Target(4), Final]);
-            let state = State::new(
+            let mut reduced_problem = ReducedProblem::new(
                 &graph,
-                vec![Agent(0), Agent(1)],
                 vec![0, 0],
+                vec![Agent(0), Agent(1)],
                 vec![Final, Target(0), Target(1), Target(2)],
-                &final_nodes
+                final_nodes,
+                None
             );
 
-            let mut reduced = ReducedProblem::new(state);
-
             loop {
-                let is_finished = reduced.expand_first();
+                let is_finished = reduced_problem.iterate();
                 if is_finished { break }
             }
 
@@ -564,7 +734,7 @@ mod test {
                 println!();
             }
             */
-            println!("Best: {:?}", reduced.best_solution.map(|(s,c)| (s.paths, c)));
+            println!("Best: {:?}", reduced_problem.best_solution.map(|(s,c)| (s, c)));
         }
     }
 }

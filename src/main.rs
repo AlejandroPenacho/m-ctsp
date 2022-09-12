@@ -3,7 +3,7 @@ mod solver;
 
 fn main() {
     let graph = graph::GraphWH::create_random(80,80,240);
-    println!("{:?}", graph);
+    // println!("{:?}", graph);
 
     let mut solver = solver::MASolver::new(&graph);
 
