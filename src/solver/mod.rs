@@ -258,8 +258,8 @@ impl<'a> Cycler<'a> {
             assert!(matches!(nodes[0], WHNode::Final))
         }
 
-        let mut available_nodes = nodes.iter().enumerate().map(|(i,_)| {
-            if i == 0 && final_max_avail != 0 {
+        let mut available_nodes = nodes.iter().enumerate().map(|(i,node)| {
+            if i == 0 && node == &WHNode::Final {
                 final_max_avail
             } else { 1 }
         }).collect::<Vec<u8>>();
@@ -605,6 +605,115 @@ mod test {
                     vec![Target(2), Target(1)],
                     vec![Target(0), Target(2)],
                     vec![Target(1), Target(2)]
+                ],
+                all_combinations
+            );
+        }
+        #[test]
+        fn with_one_final() {
+            use super::WHNode::*;
+            let cycler = Cycler::new(
+                2,
+                &[Final, Target(0), Target(1), Target(2)],
+                1
+            );
+
+            let all_combinations = cycler.collect::<Vec<Vec<WHNode>>>();
+            assert_eq!(
+                vec![
+                    vec![Target(0), Final],
+                    vec![Target(1), Final],
+                    vec![Target(2), Final],
+                    vec![Final,     Target(0)],
+                    vec![Target(1), Target(0)],
+                    vec![Target(2), Target(0)],
+                    vec![Final,     Target(1)],
+                    vec![Target(0), Target(1)],
+                    vec![Target(2), Target(1)],
+                    vec![Final,     Target(2)],
+                    vec![Target(0), Target(2)],
+                    vec![Target(1), Target(2)],
+                ],
+                all_combinations
+            );
+        }
+        #[test]
+        fn with_two_final() {
+            use super::WHNode::*;
+            let cycler = Cycler::new(
+                2,
+                &[Final, Target(0), Target(1), Target(2)],
+                2
+            );
+
+            let all_combinations = cycler.collect::<Vec<Vec<WHNode>>>();
+            assert_eq!(
+                vec![
+                    vec![Final, Final],
+                    vec![Target(0), Final],
+                    vec![Target(1), Final],
+                    vec![Target(2), Final],
+                    vec![Final,     Target(0)],
+                    vec![Target(1), Target(0)],
+                    vec![Target(2), Target(0)],
+                    vec![Final,     Target(1)],
+                    vec![Target(0), Target(1)],
+                    vec![Target(2), Target(1)],
+                    vec![Final,     Target(2)],
+                    vec![Target(0), Target(2)],
+                    vec![Target(1), Target(2)],
+                ],
+                all_combinations
+            );
+        }
+        #[test]
+        fn three_agents() {
+            use super::WHNode::*;
+            let cycler = Cycler::new(
+                3,
+                &[Final, Target(0), Target(1), Target(2)],
+                2
+            );
+
+            let all_combinations = cycler.collect::<Vec<Vec<WHNode>>>();
+            assert_eq!(
+                vec![
+                    vec![Target(0), Final,      Final],
+                    vec![Target(1), Final,      Final],
+                    vec![Target(2), Final,      Final],
+                    vec![Final,     Target(0),  Final],
+                    vec![Target(1), Target(0),  Final],
+                    vec![Target(2), Target(0),  Final],
+                    vec![Final,     Target(1),  Final],
+                    vec![Target(0), Target(1),  Final],
+                    vec![Target(2), Target(1),  Final],
+                    vec![Final,     Target(2),  Final],
+                    vec![Target(0), Target(2),  Final],
+                    vec![Target(1), Target(2),  Final],
+
+                    vec![Final,     Final,      Target(0)],
+                    vec![Target(1), Final,      Target(0)],
+                    vec![Target(2), Final,      Target(0)],
+                    vec![Final,     Target(1),  Target(0)],
+                    vec![Target(2), Target(1),  Target(0)],
+                    vec![Final,     Target(2),  Target(0)],
+                    vec![Target(1), Target(2),  Target(0)],
+
+                    vec![Final,     Final,      Target(1)],
+                    vec![Target(0), Final,      Target(1)],
+                    vec![Target(2), Final,      Target(1)],
+                    vec![Final,     Target(0),  Target(1)],
+                    vec![Target(2), Target(0),  Target(1)],
+                    vec![Final,     Target(2),  Target(1)],
+                    vec![Target(0), Target(2),  Target(1)],
+
+                    vec![Final,     Final,      Target(2)],
+                    vec![Target(0), Final,      Target(2)],
+                    vec![Target(1), Final,      Target(2)],
+                    vec![Final,     Target(0),  Target(2)],
+                    vec![Target(1), Target(0),  Target(2)],
+                    vec![Final,     Target(1),  Target(2)],
+                    vec![Target(0), Target(1),  Target(2)],
                 ],
                 all_combinations
             );
