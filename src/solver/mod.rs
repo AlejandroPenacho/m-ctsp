@@ -33,9 +33,9 @@ struct ReducedProblem<'a> {
     graph: &'a graph::GraphWH,
     initial_distances: Vec<i32>,
     final_nodes: HashMap<WHNode, Vec<WHNode>>,
-    queue: Vec<State>,
+    queue: Vec<(State, i32)>,
     best_solution: Option<(Vec<Vec<WHNode>>, i32)>,
-    heuristic: fn(&ReducedProblem, &State) -> i32
+    heuristic: Option<fn(&ReducedProblem, &State) -> i32>
 }
 
 impl<'a> ReducedProblem<'a> {
@@ -67,9 +67,10 @@ impl<'a> ReducedProblem<'a> {
             graph,
             initial_distances: initial_distances.clone(),
             final_nodes,
-            queue: vec![first_state],
+            queue: vec![(first_state, 0)],
             best_solution: None,
-            heuristic: compute_simple_heuristic_cost
+            heuristic: Some(compute_simple_heuristic_cost)
+            // heuristic: None
         };
 
         let initial_solution = initial_solution.map(|paths| {
@@ -146,10 +147,19 @@ impl<'a> ReducedProblem<'a> {
 
         // If there are no states left, return inmediately, singaling the end
         // of the algorithm
+
         if self.queue.len() == 0 { return true };
 
+        let best_state_index = if self.heuristic.is_some() {
+            self.queue.iter()
+            .enumerate()
+            .min_by_key(|(_,x)| x.1).unwrap().0
+        } else {
+            0
+        };
+
         // Take one state from the queue
-        let state = self.queue.remove(0);
+        let state = self.queue.swap_remove(best_state_index).0;
 
         // Expand the state
         let new_states = self.expand_state(&state);
@@ -190,7 +200,12 @@ impl<'a> ReducedProblem<'a> {
             // it is not added to the queue
             if all_agents_done && !all_nodes_covered { continue }
 
-            self.queue.push(new_state);
+            let heuristic_cost = self.heuristic.map_or(0, |heuristic| heuristic(&self, &new_state));
+
+
+            if self.best_solution.as_ref().map_or(false, |x| x.1 < heuristic_cost) { continue }
+
+            self.queue.push((new_state, heuristic_cost));
         }
 
         false
@@ -229,16 +244,20 @@ impl<'a> ReducedProblem<'a> {
         let mut distance = self.initial_distances[index];
         let mut cost = 0;
 
+        if path.len() == 1 {
+            return 0
+        }
 
         for i in 0..(path.len()-2) {
             distance += self.graph.get_arc_cost(&path[i], &path[i+1]).unwrap();
             cost += distance;
         }
         let last_node = path.iter().last().unwrap();
+
         if last_node != &WHNode::Final {
             distance += self.graph.get_arc_cost(&path[path.len()-2], &path[path.len()-1]).unwrap();
             cost += distance;
-            cost += distance * (self.final_nodes.get(last_node).unwrap().len() as i32 - 1);
+            cost += distance * (self.final_nodes.get(last_node).map_or(1, |x| x.len()) as i32 - 1);
         }
 
         cost
@@ -259,6 +278,8 @@ fn compute_simple_heuristic_cost(reduced_problem: &ReducedProblem, state: &State
         }
         travelled_distances.push(travelled_distance);
     }
+    println!("{:?}", state.paths);
+    println!("{travelled_distances:?}");
 
     for node in state.remaining_nodes.iter().filter(|&&node| node != WHNode::Final) {
         let mut best_collection_time = state.paths.iter()
@@ -1041,6 +1062,17 @@ mod test {
             let mut problem = MASolver::new(&graph);
             problem.compute_initial_assignment();
 
+            for agent in 0..2 {
+                for target in 0..3 {
+                    println!("Agent {agent} to Target {target}: {}", graph.get_arc_cost(&WHNode::Agent(agent), &WHNode::Target(target)).unwrap());
+                }
+            }
+            for target_1 in 0..3 {
+                for target_2 in 0..3 {
+                    println!("Target {target_1} to Target {target_2}: {}", graph.get_arc_cost(&WHNode::Target(target_1), &WHNode::Target(target_2)).unwrap());
+                }
+            }
+
             for path in problem.agent_paths.iter() {
                 println!("{:?}", path);
             }
@@ -1094,7 +1126,7 @@ mod test {
                 None
             );
 
-            let new_states = reduced_problem.expand_state(&reduced_problem.queue[0]);
+            let new_states = reduced_problem.expand_state(&reduced_problem.queue[0].0);
 
             for state in new_states {
                 println!("{:?}", state.paths);

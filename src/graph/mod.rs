@@ -94,26 +94,40 @@ impl GraphWH {
             for i_origin in 0..n_targets {
                 let origin = target_positions[i_origin].1;
 
-                target_to_target_costs[i_dest + i_origin * n_targets] =
+                target_to_target_costs[i_origin + i_dest * n_targets] =
                     manhattan_distance(origin, dest_1) + constant_cost;
             }
 
             for i_origin in 0..n_agents {
                 let origin = agent_positions[i_origin];
 
-                agent_to_target_costs[i_dest + i_origin * n_targets] =
+                agent_to_target_costs[i_origin + i_dest * n_agents] =
                     manhattan_distance(origin, dest_1) + constant_cost;
             }
 
         }
-        
 
-        GraphWH {
+        let graph = GraphWH {
             n_agents,
             n_targets,
             target_to_target_costs,
             agent_to_target_costs
+        };
+        
+        for target_index in 0..n_targets {
+            for agent_index in 0..n_agents {
+                for mid_target_index in 0..n_targets {
+                    assert!(
+                        graph.get_arc_cost(&WHNode::Agent(agent_index), &WHNode::Target(target_index)).unwrap() <=
+                        graph.get_arc_cost(&WHNode::Agent(agent_index), &WHNode::Target(mid_target_index)).unwrap() +
+                        graph.get_arc_cost(&WHNode::Target(mid_target_index), &WHNode::Target(target_index)).unwrap()
+
+                    )
+                }
+            }
         }
+        
+        graph
     }
 
     pub fn create_test_graph(
