@@ -34,7 +34,8 @@ struct ReducedProblem<'a> {
     initial_distances: Vec<i32>,
     final_nodes: HashMap<WHNode, Vec<WHNode>>,
     queue: Vec<State>,
-    best_solution: Option<(Vec<Vec<WHNode>>, i32)>
+    best_solution: Option<(Vec<Vec<WHNode>>, i32)>,
+    heuristic: fn(&ReducedProblem, &State) -> i32
 }
 
 impl<'a> ReducedProblem<'a> {
@@ -68,6 +69,7 @@ impl<'a> ReducedProblem<'a> {
             final_nodes,
             queue: vec![first_state],
             best_solution: None,
+            heuristic: compute_simple_heuristic_cost
         };
 
         let initial_solution = initial_solution.map(|paths| {
@@ -241,6 +243,39 @@ impl<'a> ReducedProblem<'a> {
 
         cost
     }
+}
+
+fn compute_simple_heuristic_cost(reduced_problem: &ReducedProblem, state: &State) -> i32 {
+    let mut total_cost = 0;
+    let mut travelled_distances = Vec::new();
+
+
+    for (i, path) in state.paths.iter().enumerate() {
+        let mut travelled_distance = reduced_problem.initial_distances[i];
+        total_cost += reduced_problem.get_partial_path_cost(&path, i);
+        for node_index in 0..(path.len()-1) {
+            travelled_distance += reduced_problem.graph
+                .get_arc_cost(&path[node_index], &path[node_index+1]).unwrap();
+        }
+        travelled_distances.push(travelled_distance);
+    }
+
+    for node in state.remaining_nodes.iter().filter(|&&node| node != WHNode::Final) {
+        let mut best_collection_time = state.paths.iter()
+            .enumerate()
+            .map(|(i,x)| (i, x.iter().last().unwrap()))
+            .filter(|(_,x)| !reduced_problem.final_nodes.contains_key(x))
+            .map(|(i,x)| (i, travelled_distances[i] + reduced_problem.graph.get_arc_cost(x, node).unwrap()))
+            .min_by_key(|(_,x)| *x).unwrap().1;
+
+        if let Some(x) = reduced_problem.final_nodes.get(node) {
+            best_collection_time *= x.len() as i32;
+        }
+
+        total_cost += best_collection_time;
+    }
+
+    total_cost
 }
 
 #[derive(Debug)]
@@ -462,7 +497,6 @@ impl<'a> MASolver<'a> {
             // initial node. This affects the cost of all nodes it takes.
             let mut initial_distance = 0;
             if !(self.agent_paths[*agent_index].len() == 0) {
-
                 for i in 0..(self.agent_paths[*agent_index].len()-1) {
                     initial_distance += self.graph.get_arc_cost(
                         &self.agent_paths[*agent_index][i],
@@ -497,6 +531,13 @@ impl<'a> MASolver<'a> {
         reduced_problem
     }
 
+    fn join_problem(&mut self, new_paths: Vec<Vec<WHNode>>, endpoints: &[(usize, (usize,usize))]) {
+        for (index, mut new_path) in new_paths.into_iter().enumerate() {
+            let agent_index = endpoints[index].0;
+            self.agent_paths[agent_index].append(&mut new_path);
+        }
+    }
+
     fn solve_reduced(&mut self, endpoints: &[(usize, (usize,usize))]) {
         // Check that the same agent has not been added twice to the
         // optimization and that the last optimized node is at much the final
@@ -512,10 +553,7 @@ impl<'a> MASolver<'a> {
 
         let new_paths = reduced_problem.optimize();
 
-        for (index, mut new_path) in new_paths.into_iter().enumerate() {
-            let agent_index = endpoints[index].0;
-            self.agent_paths[agent_index].append(&mut new_path);
-        }
+        self.join_problem(new_paths, endpoints);
     }
 
     fn compute_total_cost(&self) -> i32 {
@@ -547,18 +585,20 @@ mod test {
     fn simple_graph() -> GraphWH {
         GraphWH::create_test_graph(
             3,
-            5,
+            7,
             vec![
-                vec![ 1, 6, 5, 5, 2],
-                vec![ 8, 5, 1, 3, 8],
-                vec![ 1, 2, 3, 7, 5],
+                vec![ 1, 6, 5, 5, 2, 3, 8],
+                vec![ 8, 5, 1, 3, 8, 2, 4],
+                vec![ 1, 2, 3, 7, 5, 6, 5]
             ],
             vec![
-                vec![ 2, 4, 6, 2, 6],
-                vec![ 3, 7, 1, 4, 6],
-                vec![ 1, 1, 4, 5, 3],
-                vec![ 9, 6, 4, 5, 2],
-                vec![ 7, 4, 3, 2, 2],
+                vec![ 2, 4, 6, 2, 6, 4, 3],
+                vec![ 3, 7, 1, 4, 6, 2, 5],
+                vec![ 1, 1, 4, 5, 3, 1, 9],
+                vec![ 9, 6, 4, 5, 2, 4, 3],
+                vec![ 7, 4, 3, 2, 2, 8, 2],
+                vec![ 5, 3, 6, 4, 3, 5, 7],
+                vec![ 3, 5, 7, 3, 7, 3, 5]
             ]
         )
     }
@@ -719,136 +759,302 @@ mod test {
             );
         }
     }
-
-    #[test]
-    fn the_cut() {
-        let graph = GraphWH::create_random(20, 4, 20);
-        let mut problem = MASolver::new(&graph);
-        problem.compute_initial_assignment();
-        for path in problem.agent_paths.iter() {
-            println!("{:?}", path);
-        }
-
-        println!("-----------------------------------");
-
-        problem.solve_reduced(&[(0, (2, 4)), (1,(0,1))]);
-    }
-
-    #[test]
-    fn much_optimal() {
-        let n_agents = 4;
-        let graph = GraphWH::create_random(20, n_agents, 12);
-        let mut problem = MASolver::new(&graph);
-        problem.compute_initial_assignment();
-
-        for path in problem.agent_paths.iter() {
-            println!("{:?}", path);
-        }
-        println!("Cost:{}", problem.compute_total_cost());
-
-        for i in 0..n_agents {
-            for j in (i+1)..n_agents {
-                problem.solve_reduced(&[
-                    (i, (0, problem.agent_paths[i].len()-1)),
-                    (j, (0, problem.agent_paths[j].len()-1))
-                ]);
-                println!("\n\nOptimized {} and {}:\n", i, j);
-                for path in problem.agent_paths.iter() {
-                    println!("{:?}", path);
-                }
-                println!("Cost:{}", problem.compute_total_cost());
-            }
-        }
-    }
-
-    #[test]
-    fn mini_optimal() {
-        use WHNode::*;
-        let n_agents = 4;
-        let graph = GraphWH::create_random(20, n_agents, 7);
-
-        println!("Cost R0->0: {}, 0->1: {},  cost 1->2: {}, cost 2->3: {}\n", 
-            graph.get_arc_cost(&Agent(0), &Target(0)).unwrap(),
-            graph.get_arc_cost(&Target(0), &Target(1)).unwrap(),
-            graph.get_arc_cost(&Target(1), &Target(2)).unwrap(),
-            graph.get_arc_cost(&Target(2), &Target(3)).unwrap(),
-        );
-        println!("Cost R1->4: {},  cost 4->5: {}, cost 5->6: {}, cost 6->3: {}\n", 
-            graph.get_arc_cost(&Agent(1), &Target(4)).unwrap(),
-            graph.get_arc_cost(&Target(4), &Target(5)).unwrap(),
-            graph.get_arc_cost(&Target(5), &Target(6)).unwrap(),
-            graph.get_arc_cost(&Target(6), &Target(3)).unwrap(),
-        );
-
-        let mut problem = MASolver::new(&graph);
-        problem.agent_paths = vec![
-            vec![Agent(0), Target(0), Target(1), Target(2), Target(3), Final],
-            vec![Agent(1), Target(4), Target(5), Target(6), Final]
-        ];
-
-        for path in problem.agent_paths.iter() {
-            println!("{:?}", path);
-        }
-        println!("Cost:{}\n\n", problem.compute_total_cost());
-
-        problem.solve_reduced(
-            &[
-                (0, (3,4)),
-                (1, (3,4))
-            ]
-        );
-
-        for path in problem.agent_paths.iter() {
-            println!("{:?}", path);
-        }
-        println!("Cost:{}", problem.compute_total_cost());
-    }
-
-    #[test]
-    fn other_optimal() {
-        let n_agents = 4;
-        let graph = GraphWH::create_random(20, n_agents, 20);
-        let mut problem = MASolver::new(&graph);
-        problem.compute_initial_assignment();
-        println!("Cost:{}\n\n", problem.compute_total_cost());
-
-        for i in 0..5 {
-            let mut endpoints = Vec::new();
-            for agent_index in 0..n_agents {
-                if problem.agent_paths[agent_index].len() > (i + 2) {
-                    endpoints.push((agent_index, (i, i+2)));
-                }
-            }
     
-            println!("\n\nEndpoints: {:?}", endpoints);
-            problem.solve_reduced(&endpoints);
+    mod split {
+        use super::*;
+        #[test]
+        fn basic_split() {
+            use WHNode::*;
+            let graph = simple_graph();
+            let mut problem = MASolver::new(&graph);
+
+            problem.agent_paths = vec![
+                vec![Agent(0), Target(1), Target(2), Target(3), Final],
+                vec![Agent(1), Target(4), Target(5), Target(6), Final]
+            ];
+
+            let split_problem = problem.split_problem(
+                &[(0, (0, 2)), (1,(2,4))]
+            );
+
+            // Check initial distances
+            assert_eq!(
+                vec![
+                    0,
+                    graph.get_arc_cost(&Agent(1), &Target(4)).unwrap()
+                    + graph.get_arc_cost(&Target(4),&Target(5)).unwrap()
+                ],
+                split_problem.initial_distances
+            );
+
+            // Check final node chains
+            assert_eq!(
+                Some(&vec![Target(3), Final]),
+                split_problem.final_nodes.get(&Target(2))
+            );
+            assert_eq!(
+                Some(&vec![]),
+                split_problem.final_nodes.get(&Final)
+            );
+
+
+            // Check agent paths in original problem
+            assert_eq!(
+                vec![vec![], vec![Agent(1), Target(4)]],
+                problem.agent_paths
+            );
+        }
+    }
+
+    mod cost {
+        use super::*;
+
+        #[test]
+        fn basic_cost() {
+            use WHNode::*;
+            let graph = simple_graph();
+            let mut problem = MASolver::new(&graph);
+
+            problem.agent_paths = vec![
+                vec![Agent(0), Target(1), Target(2), Target(3), Final],
+                vec![Agent(1), Target(4), Target(5), Target(6), Final]
+            ];
+
+            let split_problem = problem.split_problem(
+                &[(0, (0, 2)), (1,(2,4))]
+            );
+
+            let partial_paths = vec![
+                vec![Agent(0), Target(4), Target(6), Target(2)],
+                vec![Target(5), Target(2), Target(4), Final]
+            ];
+
+            let complete_paths = vec![
+                //  Partial path-------------------------|------------Final chain
+                vec![Agent(0), Target(4), Target(6), Target(2), Target(3), Final],
+                vec![Agent(1), Target(4), Target(5), Target(2), Target(4), Final]
+                //  Initial path-------------|---Partial path----------------|-Final chain
+            ];
+
+            // Check partial costs for arbitrary partial paths
+            assert_eq!(
+                graph.get_arc_cost(&Agent(0), &Target(4)).unwrap() * 4
+                + graph.get_arc_cost(&Target(4), &Target(6)).unwrap() * 3
+                + graph.get_arc_cost(&Target(6), &Target(2)).unwrap() * 2,
+
+                split_problem.get_partial_path_cost(
+                    &partial_paths[0],
+                    0
+                )
+            );
+            assert_eq!(
+                split_problem.initial_distances[1] * 2
+                + graph.get_arc_cost(&Target(5), &Target(2)).unwrap() * 2
+                + graph.get_arc_cost(&Target(2), &Target(4)).unwrap() * 1
+                + graph.get_arc_cost(&Target(4), &Final).unwrap() * 0,
+
+                split_problem.get_partial_path_cost(
+                    &partial_paths[1],
+                    1
+                )
+            );
+
+                // Check equivalence between partial and complete costs
+
+            // When there are nodes after the final node of the partial path,
+            // the complete cost must include the travel cost there, with
+            // initial distance 0
+            assert_eq!(
+                split_problem.get_partial_path_cost(&partial_paths[0], 0) + 
+                graph.get_arc_cost(&Target(2), &Target(3)).unwrap(),
+                compute_complete_path_cost(&graph, &complete_paths[0]).unwrap()
+            );
+
+            // When there are initial nodes, their distance must be added to
+            // the partial one.
+            assert_eq!(
+                graph.get_arc_cost(&Agent(1), &Target(4)).unwrap() * 2 +
+                graph.get_arc_cost(&Target(4), &Target(5)).unwrap() +
+                split_problem.get_partial_path_cost(&partial_paths[1], 1) ,
+                compute_complete_path_cost(&graph, &complete_paths[1]).unwrap()
+            )
+        }
+    }
+
+    mod join {
+        use super::*;
+        #[test]
+        fn simple_join() {
+            use WHNode::*;
+            let graph = simple_graph();
+            let mut problem = MASolver::new(&graph);
+
+            let endpoints = [(0, (0, 2)), (1,(2,4))];
+
+            problem.agent_paths = vec![
+                vec![Agent(0), Target(1), Target(2), Target(3), Final],
+                vec![Agent(1), Target(4), Target(5), Target(6), Final]
+            ];
+
+            let _split_problem = problem.split_problem(&endpoints);
+
+            // The paths obtained in the split problem already include the
+            // final nodes
+            let partial_paths = vec![
+                vec![Agent(0), Target(4), Target(6), Target(2), Target(3), Final],
+                vec![Target(5), Target(2), Target(4), Final]
+            ];
+
+            problem.join_problem(partial_paths, &endpoints);
+
+            assert_eq!(
+                vec![
+                    vec![Agent(0), Target(4), Target(6), Target(2), Target(3), Final],
+                    vec![Agent(1), Target(4), Target(5), Target(2), Target(4), Final]
+                ],
+                problem.agent_paths
+            );
+        }
+    }
+
+    mod major_tests {
+        use super::*;
+
+        #[ignore]
+        #[test]
+        fn the_cut() {
+            let graph = GraphWH::create_random(20, 4, 20);
+            let mut problem = MASolver::new(&graph);
+            problem.compute_initial_assignment();
+            for path in problem.agent_paths.iter() {
+                println!("{:?}", path);
+            }
+
+            println!("-----------------------------------");
+
+            problem.solve_reduced(&[(0, (2, 3)), (1,(0,1))]);
+        }
+
+        #[test]
+        #[ignore]
+        fn much_optimal() {
+            let n_agents = 4;
+            let graph = GraphWH::create_random(20, n_agents, 12);
+            let mut problem = MASolver::new(&graph);
+            problem.compute_initial_assignment();
+
+            for path in problem.agent_paths.iter() {
+                println!("{:?}", path);
+            }
+            println!("Cost:{}", problem.compute_total_cost());
+
+            for i in 0..n_agents {
+                for j in (i+1)..n_agents {
+                    problem.solve_reduced(&[
+                        (i, (0, problem.agent_paths[i].len()-1)),
+                        (j, (0, problem.agent_paths[j].len()-1))
+                    ]);
+                    println!("\n\nOptimized {} and {}:\n", i, j);
+                    for path in problem.agent_paths.iter() {
+                        println!("{:?}", path);
+                    }
+                    println!("Cost:{}", problem.compute_total_cost());
+                }
+            }
+        }
+
+        #[test]
+        #[ignore]
+        fn mini_optimal() {
+            use WHNode::*;
+            let n_agents = 4;
+            let graph = GraphWH::create_random(20, n_agents, 7);
+
+            println!("Cost R0->0: {}, 0->1: {},  cost 1->2: {}, cost 2->3: {}\n", 
+                graph.get_arc_cost(&Agent(0), &Target(0)).unwrap(),
+                graph.get_arc_cost(&Target(0), &Target(1)).unwrap(),
+                graph.get_arc_cost(&Target(1), &Target(2)).unwrap(),
+                graph.get_arc_cost(&Target(2), &Target(3)).unwrap(),
+            );
+            println!("Cost R1->4: {},  cost 4->5: {}, cost 5->6: {}, cost 6->3: {}\n", 
+                graph.get_arc_cost(&Agent(1), &Target(4)).unwrap(),
+                graph.get_arc_cost(&Target(4), &Target(5)).unwrap(),
+                graph.get_arc_cost(&Target(5), &Target(6)).unwrap(),
+                graph.get_arc_cost(&Target(6), &Target(3)).unwrap(),
+            );
+
+            let mut problem = MASolver::new(&graph);
+            problem.agent_paths = vec![
+                vec![Agent(0), Target(0), Target(1), Target(2), Target(3), Final],
+                vec![Agent(1), Target(4), Target(5), Target(6), Final]
+            ];
+
+            for path in problem.agent_paths.iter() {
+                println!("{:?}", path);
+            }
+            println!("Cost:{}\n\n", problem.compute_total_cost());
+
+            problem.solve_reduced(
+                &[
+                    (0, (3,4)),
+                    (1, (3,4))
+                ]
+            );
 
             for path in problem.agent_paths.iter() {
                 println!("{:?}", path);
             }
             println!("Cost:{}", problem.compute_total_cost());
         }
-    }
 
-    #[test]
-    fn please() {
-        let graph = GraphWH::create_random(20,2,3);
-        let mut problem = MASolver::new(&graph);
-        problem.compute_initial_assignment();
+        #[test]
+        #[ignore]
+        fn other_optimal() {
+            let n_agents = 4;
+            let graph = GraphWH::create_random(20, n_agents, 20);
+            let mut problem = MASolver::new(&graph);
+            problem.compute_initial_assignment();
+            println!("Cost:{}\n\n", problem.compute_total_cost());
 
-        for path in problem.agent_paths.iter() {
-            println!("{:?}", path);
+            for i in 0..5 {
+                let mut endpoints = Vec::new();
+                for agent_index in 0..n_agents {
+                    if problem.agent_paths[agent_index].len() > (i + 2) {
+                        endpoints.push((agent_index, (i, i+2)));
+                    }
+                }
+        
+                println!("\n\nEndpoints: {:?}", endpoints);
+                problem.solve_reduced(&endpoints);
+
+                for path in problem.agent_paths.iter() {
+                    println!("{:?}", path);
+                }
+                println!("Cost:{}", problem.compute_total_cost());
+            }
         }
-        println!("Cost:{}", problem.compute_total_cost());
 
-        problem.solve_reduced(&[
-            (0,(0,problem.agent_paths[0].len()-1)),
-            (1,(0,problem.agent_paths[1].len()-1))
-        ]);
-        for path in problem.agent_paths.iter() {
-            println!("{:?}", path);
+        #[test]
+        #[ignore]
+        fn please() {
+            let graph = GraphWH::create_random(20,2,3);
+            let mut problem = MASolver::new(&graph);
+            problem.compute_initial_assignment();
+
+            for path in problem.agent_paths.iter() {
+                println!("{:?}", path);
+            }
+            println!("Cost:{}", problem.compute_total_cost());
+
+            problem.solve_reduced(&[
+                (0,(0,problem.agent_paths[0].len()-1)),
+                (1,(0,problem.agent_paths[1].len()-1))
+            ]);
+            for path in problem.agent_paths.iter() {
+                println!("{:?}", path);
+            }
+            println!("Cost:{}", problem.compute_total_cost());
         }
-        println!("Cost:{}", problem.compute_total_cost());
     }
 
     mod combinatorics {

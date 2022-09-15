@@ -6,7 +6,7 @@ pub trait Graph {
     fn get_arc_cost(&self, x_0: &Self::Node, x_1: &Self::Node) -> Option<i32>;
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum WHNode {
     Agent(usize),
     Target(usize),
