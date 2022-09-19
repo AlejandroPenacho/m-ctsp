@@ -12,20 +12,23 @@ struct State {
     remaining_nodes: Vec<WHNode>,
     available_final_nodes: u8,
     active_robots: Vec<usize>,
-    // current_robot_distances: Vec<i32>,
-    // current_robot_path_costs: Vec<i32>
+    current_robot_distances: Vec<i32>,
+    current_path_costs: Vec<i32>
 }
 
 impl State {
     fn new(
         agent_positions: Vec<WHNode>,
         remaining_nodes: Vec<WHNode>,
+        current_robot_distances: Vec<i32>,
         available_final_nodes: u8) -> Self {
 
         let paths: Vec<Vec<WHNode>> = agent_positions.iter().map(|x| vec![x.clone()]).collect();
 
         State {
             active_robots: (0..paths.len()).collect(),
+            current_robot_distances,
+            current_path_costs: vec![0; paths.len()],
             paths,
             remaining_nodes,
             available_final_nodes
@@ -64,6 +67,7 @@ impl<'a> ReducedProblem<'a> {
         let first_state = State::new(
             initial_positions,
             remaining_nodes,
+            initial_distances.clone(),
             available_final_nodes.try_into().unwrap()
         );
 
@@ -133,11 +137,7 @@ impl<'a> ReducedProblem<'a> {
             // If the state is complete (a valid final solution), compute its
             // cost and, if it is better than the current, replace it
             if all_nodes_covered && all_agents_done {
-                let cost = new_state.paths.iter().enumerate()
-                    .map(|(index, path)| {
-                            self.get_partial_path_cost(path, index)
-                        })
-                    .sum();
+                let cost = new_state.current_path_costs.iter().sum();
 
                 if self.best_solution.as_ref().map_or(true, |(_, prev_best_cost)| &cost < prev_best_cost) {
                     self.best_solution = Some((new_state.paths, cost));
@@ -165,12 +165,6 @@ impl<'a> ReducedProblem<'a> {
 
         let n_active_agents = state.active_robots.len();
 
-        #[cfg(test)]
-        assert_eq!(
-            n_active_agents,
-            state.paths.iter().filter(|&x| !self.final_nodes.contains_key(x.last().unwrap())).count()
-        );
-
         // The cycler generates all possible next actions for the active agents
         let cycler = Cycler::new(n_active_agents, &state.remaining_nodes, state.available_final_nodes);
 
@@ -193,8 +187,7 @@ impl<'a> ReducedProblem<'a> {
                     (i, state.active_robots[i])
                 }) {
 
-                // let prev_agent_position = new_state.paths[agent_index].iter().last().unwrap();
-
+                let prev_agent_position = new_state.paths[agent_index].iter().last().unwrap().clone();
 
                 // Take the new agent position from the combination
                 let new_agent_position: WHNode = combination[active_agent_index].clone();
@@ -217,9 +210,18 @@ impl<'a> ReducedProblem<'a> {
                     if new_state.available_final_nodes == 0 { new_state.remaining_nodes.remove(0); }
                 }
 
-
                 new_state.paths[agent_index].push(new_agent_position.clone());
+                new_state.current_robot_distances[agent_index] += self.graph.get_arc_cost(&prev_agent_position, &new_agent_position).unwrap();
 
+                if agent_is_finished[active_agent_index] {
+                    if new_agent_position != WHNode::Final {
+                        new_state.current_path_costs[agent_index] +=
+                            new_state.current_robot_distances[agent_index]
+                            * self.final_nodes.get(&new_agent_position).unwrap().len() as i32;
+                    }
+                } else {
+                    new_state.current_path_costs[agent_index] += new_state.current_robot_distances[agent_index];
+                }
             }
 
             new_state.active_robots = new_state.active_robots.into_iter().enumerate().filter_map(|(i, r)| { if !agent_is_finished[i] {Some(r)} else {None} }).collect();
@@ -285,21 +287,10 @@ impl<'a> ReducedProblem<'a> {
 }
 
 fn compute_simple_heuristic_cost(reduced_problem: &ReducedProblem, state: &State) -> i32 {
-    let mut total_cost = 0;
-    let mut travelled_distances = Vec::new();
 
+    let mut total_cost = state.current_path_costs.iter().sum();
+    let travelled_distances = &state.current_robot_distances;
 
-    for (i, path) in state.paths.iter().enumerate() {
-        let mut travelled_distance = reduced_problem.initial_distances[i];
-        total_cost += reduced_problem.get_partial_path_cost(&path, i);
-        for node_index in 0..(path.len()-1) {
-            travelled_distance += reduced_problem.graph
-                .get_arc_cost(&path[node_index], &path[node_index+1]).unwrap();
-        }
-        travelled_distances.push(travelled_distance);
-    }
-    println!("{:?}", state.paths);
-    println!("{travelled_distances:?}");
 
     for node in state.remaining_nodes.iter().filter(|&&node| node != WHNode::Final) {
 
@@ -308,21 +299,6 @@ fn compute_simple_heuristic_cost(reduced_problem: &ReducedProblem, state: &State
                 .map(|(r,x)| (r, travelled_distances[*r] + reduced_problem.graph.get_arc_cost(x, node).unwrap()))
                 .min_by_key(|(_,x)| *x).unwrap().1;
 
-        assert_eq!(
-            state.paths.iter().map(|x| x.iter().last().unwrap()).filter(|x| !reduced_problem.final_nodes.contains_key(x)).collect::<Vec<_>>(),
-            state.active_robots.iter().map(|r| state.paths[*r].iter().last().unwrap()).collect::<Vec<_>>()
-        );
-
-        #[cfg(test)]
-        assert_eq!(
-            best_collection_time,
-            state.paths.iter()
-                .enumerate()
-                .map(|(i,x)| (i, x.iter().last().unwrap()))
-                .filter(|(_,x)| !reduced_problem.final_nodes.contains_key(x))
-                .map(|(i,x)| (i, travelled_distances[i] + reduced_problem.graph.get_arc_cost(x, node).unwrap()))
-                .min_by_key(|(_,x)| *x).unwrap().1
-        );
 
         if let Some(x) = reduced_problem.final_nodes.get(node) {
             best_collection_time *= x.len() as i32;
@@ -987,7 +963,9 @@ mod test {
 
             println!("-----------------------------------");
 
+            let last_total_cost = problem.compute_total_cost();
             problem.solve_reduced(&[(0, (2, 3)), (1,(0,1))]);
+            assert!(problem.compute_total_cost() <= last_total_cost);
         }
 
         #[test]
@@ -1003,6 +981,8 @@ mod test {
             }
             println!("Cost:{}", problem.compute_total_cost());
 
+            let mut last_total_cost = problem.compute_total_cost();
+
             for i in 0..n_agents {
                 for j in (i+1)..n_agents {
                     problem.solve_reduced(&[
@@ -1013,7 +993,11 @@ mod test {
                     for path in problem.agent_paths.iter() {
                         println!("{:?}", path);
                     }
-                    println!("Cost:{}", problem.compute_total_cost());
+                    let problem_cost = problem.compute_total_cost();
+                    println!("Cost:{}", problem_cost);
+
+                    assert!(problem_cost <= last_total_cost);
+                    last_total_cost = problem_cost;
                 }
             }
         }
@@ -1049,12 +1033,17 @@ mod test {
             }
             println!("Cost:{}\n\n", problem.compute_total_cost());
 
+
+            let problem_cost = problem.compute_total_cost();
+
             problem.solve_reduced(
                 &[
                     (0, (3,4)),
                     (1, (3,4))
                 ]
             );
+
+            assert!(problem.compute_total_cost() <= problem_cost);
 
             for path in problem.agent_paths.iter() {
                 println!("{:?}", path);
@@ -1071,6 +1060,9 @@ mod test {
             problem.compute_initial_assignment();
             println!("Cost:{}\n\n", problem.compute_total_cost());
 
+
+            let mut last_total_cost = problem.compute_total_cost();
+
             for i in 0..5 {
                 let mut endpoints = Vec::new();
                 for agent_index in 0..n_agents {
@@ -1085,7 +1077,12 @@ mod test {
                 for path in problem.agent_paths.iter() {
                     println!("{:?}", path);
                 }
-                println!("Cost:{}", problem.compute_total_cost());
+
+                let problem_cost = problem.compute_total_cost();
+                println!("Cost:{}", problem_cost);
+
+                assert!(problem_cost <= last_total_cost);
+                last_total_cost = problem_cost;
             }
         }
 
@@ -1095,6 +1092,8 @@ mod test {
             let graph = GraphWH::create_random(20,2,3);
             let mut problem = MASolver::new(&graph);
             problem.compute_initial_assignment();
+
+            let mut last_total_cost = problem.compute_total_cost();
 
             for agent in 0..2 {
                 for target in 0..3 {
@@ -1120,6 +1119,8 @@ mod test {
                 println!("{:?}", path);
             }
             println!("Cost:{}", problem.compute_total_cost());
+
+            assert!(problem.compute_total_cost() <= last_total_cost);
         }
     }
 
