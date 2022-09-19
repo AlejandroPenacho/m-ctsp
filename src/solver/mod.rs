@@ -10,7 +10,10 @@ use std::collections::{HashSet,HashMap};
 struct State {
     paths: Vec<Vec<WHNode>>,
     remaining_nodes: Vec<WHNode>,
-    available_final_nodes: u8
+    available_final_nodes: u8,
+    active_robots: Vec<usize>,
+    // current_robot_distances: Vec<i32>,
+    // current_robot_path_costs: Vec<i32>
 }
 
 impl State {
@@ -22,6 +25,7 @@ impl State {
         let paths: Vec<Vec<WHNode>> = agent_positions.iter().map(|x| vec![x.clone()]).collect();
 
         State {
+            active_robots: (0..paths.len()).collect(),
             paths,
             remaining_nodes,
             available_final_nodes
@@ -84,61 +88,6 @@ impl<'a> ReducedProblem<'a> {
 
         output.best_solution = initial_solution;
         output
-    }
-
-    fn expand_state(&self, state: &State) -> Vec<State> {
-        // Get the number of agents that have not reached a final node yet
-        let n_active_agents = state.paths.iter().filter(|&x|
-            !self.final_nodes.contains_key(x.last().unwrap())
-        ).count();
-
-        // Get the real total number of agents
-        let n_agents = state.paths.len();
-
-        // The cycler generates all possible next actions for the active agents
-        let cycler = Cycler::new(n_active_agents, &state.remaining_nodes, state.available_final_nodes);
-
-        let mut new_states: Vec<State> = Vec::new();
-        for combination in cycler {
-            let mut new_state = state.clone();
-
-            // next_target_index corresponds to the index of the agent among
-            // active agents, and agent_index in the index among all agents
-            // The first one correponds to the index of the next node in the
-            // combination
-            for (next_target_index, agent_index) in (0..n_agents).filter(|&i| {
-                    !self.final_nodes.contains_key(state.paths[i].iter().last().unwrap())
-                }).enumerate() {
-
-                // let prev_agent_position = new_state.paths[agent_index].iter().last().unwrap();
-
-                // Take the new agent position from the combination
-                let new_agent_position: WHNode = combination[next_target_index].clone();
-
-                // If the new position is a target, remove it from the
-                // remaining nodes
-                if let WHNode::Target(_) = new_agent_position {
-                    new_state.remaining_nodes.remove(
-                        new_state.remaining_nodes.iter().position(|x| x == &new_agent_position).unwrap()
-                    );
-                }
-
-                // If it is a final node, reduced the number of available final
-                // nodes by one. If it is the last final node, remove the node
-                // from the remaining nodes
-                if let WHNode::Final = new_agent_position {
-                    new_state.available_final_nodes -= 1;
-                    if new_state.available_final_nodes == 0 { new_state.remaining_nodes.remove(0); }
-                }
-
-                new_state.paths[agent_index].push(new_agent_position.clone());
-
-            }
-
-            new_states.push(new_state);
-        }
-
-        new_states
     }
 
     fn iterate(&mut self) -> bool {
@@ -211,6 +160,77 @@ impl<'a> ReducedProblem<'a> {
         false
     }
 
+    fn expand_state(&self, state: &State) -> Vec<State> {
+        // Get the number of agents that have not reached a final node yet
+
+        let n_active_agents = state.active_robots.len();
+
+        #[cfg(test)]
+        assert_eq!(
+            n_active_agents,
+            state.paths.iter().filter(|&x| !self.final_nodes.contains_key(x.last().unwrap())).count()
+        );
+
+        // The cycler generates all possible next actions for the active agents
+        let cycler = Cycler::new(n_active_agents, &state.remaining_nodes, state.available_final_nodes);
+
+        let mut new_states: Vec<State> = Vec::new();
+        for combination in cycler {
+            let mut new_state = state.clone();
+
+            // next_target_index corresponds to the index of the agent among
+            // active agents, and agent_index in the index among all agents
+            // The first one correponds to the index of the next node in the
+            // combination
+            /*
+            for (active_agent_index, agent_index) in (0..n_agents).filter(|&i| {
+                    !self.final_nodes.contains_key(state.paths[i].iter().last().unwrap())
+                }).enumerate() {
+            */
+            let mut agent_is_finished = vec![false; n_active_agents];
+
+            for (active_agent_index, agent_index) in (0..n_active_agents).map(|i| {
+                    (i, state.active_robots[i])
+                }) {
+
+                // let prev_agent_position = new_state.paths[agent_index].iter().last().unwrap();
+
+
+                // Take the new agent position from the combination
+                let new_agent_position: WHNode = combination[active_agent_index].clone();
+
+                if self.final_nodes.contains_key(&new_agent_position) {agent_is_finished[active_agent_index] = true }
+
+                // If the new position is a target, remove it from the
+                // remaining nodes
+                if let WHNode::Target(_) = new_agent_position {
+                    new_state.remaining_nodes.remove(
+                        new_state.remaining_nodes.iter().position(|x| x == &new_agent_position).unwrap()
+                    );
+                }
+
+                // If it is a final node, reduced the number of available final
+                // nodes by one. If it is the last final node, remove the node
+                // from the remaining nodes
+                if let WHNode::Final = new_agent_position {
+                    new_state.available_final_nodes -= 1;
+                    if new_state.available_final_nodes == 0 { new_state.remaining_nodes.remove(0); }
+                }
+
+
+                new_state.paths[agent_index].push(new_agent_position.clone());
+
+            }
+
+            new_state.active_robots = new_state.active_robots.into_iter().enumerate().filter_map(|(i, r)| { if !agent_is_finished[i] {Some(r)} else {None} }).collect();
+
+            new_states.push(new_state);
+        }
+
+        new_states
+    }
+
+
     fn optimize(mut self) -> Vec<Vec<WHNode>> {
         loop {
             let is_finished = self.iterate();
@@ -282,12 +302,27 @@ fn compute_simple_heuristic_cost(reduced_problem: &ReducedProblem, state: &State
     println!("{travelled_distances:?}");
 
     for node in state.remaining_nodes.iter().filter(|&&node| node != WHNode::Final) {
-        let mut best_collection_time = state.paths.iter()
-            .enumerate()
-            .map(|(i,x)| (i, x.iter().last().unwrap()))
-            .filter(|(_,x)| !reduced_problem.final_nodes.contains_key(x))
-            .map(|(i,x)| (i, travelled_distances[i] + reduced_problem.graph.get_arc_cost(x, node).unwrap()))
-            .min_by_key(|(_,x)| *x).unwrap().1;
+
+        let mut best_collection_time = state.active_robots.iter()
+                .map(|r| (r, state.paths[*r].iter().last().unwrap()))
+                .map(|(r,x)| (r, travelled_distances[*r] + reduced_problem.graph.get_arc_cost(x, node).unwrap()))
+                .min_by_key(|(_,x)| *x).unwrap().1;
+
+        assert_eq!(
+            state.paths.iter().map(|x| x.iter().last().unwrap()).filter(|x| !reduced_problem.final_nodes.contains_key(x)).collect::<Vec<_>>(),
+            state.active_robots.iter().map(|r| state.paths[*r].iter().last().unwrap()).collect::<Vec<_>>()
+        );
+
+        #[cfg(test)]
+        assert_eq!(
+            best_collection_time,
+            state.paths.iter()
+                .enumerate()
+                .map(|(i,x)| (i, x.iter().last().unwrap()))
+                .filter(|(_,x)| !reduced_problem.final_nodes.contains_key(x))
+                .map(|(i,x)| (i, travelled_distances[i] + reduced_problem.graph.get_arc_cost(x, node).unwrap()))
+                .min_by_key(|(_,x)| *x).unwrap().1
+        );
 
         if let Some(x) = reduced_problem.final_nodes.get(node) {
             best_collection_time *= x.len() as i32;
@@ -372,7 +407,6 @@ impl<'a> std::iter::Iterator for Cycler<'a> {
         Some(self.current_conf.iter().map(|&i| self.nodes[i.unwrap()].clone()).collect())
     }
 }
-
 
 pub struct MASolver<'a> {
     graph: &'a graph::GraphWH,
@@ -552,13 +586,6 @@ impl<'a> MASolver<'a> {
         reduced_problem
     }
 
-    fn join_problem(&mut self, new_paths: Vec<Vec<WHNode>>, endpoints: &[(usize, (usize,usize))]) {
-        for (index, mut new_path) in new_paths.into_iter().enumerate() {
-            let agent_index = endpoints[index].0;
-            self.agent_paths[agent_index].append(&mut new_path);
-        }
-    }
-
     fn solve_reduced(&mut self, endpoints: &[(usize, (usize,usize))]) {
         // Check that the same agent has not been added twice to the
         // optimization and that the last optimized node is at much the final
@@ -575,6 +602,13 @@ impl<'a> MASolver<'a> {
         let new_paths = reduced_problem.optimize();
 
         self.join_problem(new_paths, endpoints);
+    }
+
+    fn join_problem(&mut self, new_paths: Vec<Vec<WHNode>>, endpoints: &[(usize, (usize,usize))]) {
+        for (index, mut new_path) in new_paths.into_iter().enumerate() {
+            let agent_index = endpoints[index].0;
+            self.agent_paths[agent_index].append(&mut new_path);
+        }
     }
 
     fn compute_total_cost(&self) -> i32 {
